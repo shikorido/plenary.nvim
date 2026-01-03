@@ -7,6 +7,7 @@ local bit = require "plenary.bit"
 local uv = vim.loop
 
 local F = require "plenary.functional"
+local U = require "plenary.utils"
 
 local S_IF = {
   -- S_IFDIR  = 0o040000  # directory
@@ -16,12 +17,17 @@ local S_IF = {
 }
 
 local path = {}
-path.home = vim.loop.os_homedir()
+-- os_homedir ignores HOME in msys2.
+if U.is_msys2 then
+  path.home = U.posix_to_windows(vim.fn.expand("~"))
+else
+  path.home = vim.loop.os_homedir()
+end
 
 path.sep = (function()
   if jit then
     local os = string.lower(jit.os)
-    if os ~= "windows" then
+    if os ~= "windows" and not U.is_msys2 then
       return "/"
     else
       return "\\"
@@ -39,7 +45,10 @@ path.root = (function()
   else
     return function(base)
       base = base or vim.loop.cwd()
-      return base:sub(1, 1) .. ":\\"
+      if U.is_msys2 then
+        base = U.posix_to_windows(base)
+      end
+      return base:sub(1, 1) .. ":" .. path.sep
     end
   end
 end)()
@@ -55,8 +64,11 @@ local concat_paths = function(...)
 end
 
 local function is_root(pathname)
-  if path.sep == "\\" then
-    return string.match(pathname, "^[A-Z]:\\?$")
+  if path.sep == "\\" or U.is_msys2 then
+    if U.is_msys2 then
+      pathname = U.posix_to_windows(pathname)
+    end
+    return string.match(pathname, "^[A-Za-z]:[\\/]?$")
   end
   return pathname == "/"
 end
@@ -77,7 +89,10 @@ local is_uri = function(filename)
 end
 
 local is_absolute = function(filename, sep)
-  if sep == "\\" then
+  if sep == "\\" or U.is_msys2 then
+    if U.is_msys2 then
+      filename = U.posix_to_windows(filename)
+    end
     return string.match(filename, "^[%a]:[\\/].*$") ~= nil
   end
   return string.sub(filename, 1, 1) == sep
@@ -103,7 +118,15 @@ local function _normalize_path(filename, cwd)
     local split_without_disk_name = function(filename_local)
       local parts = _split_by_separator(filename_local)
       -- Remove disk name part on Windows
-      if path.sep == "\\" and is_abs then
+      if is_abs and path.sep == "\\" then
+        -- Preemptive
+        if U.is_msys2 then
+          assert(
+            U.is_windows_abs_path(filename_local),
+            "split_without_disk_name: filename_local is not an absolute windows path on msys2\n"..
+            vim.inspect(filename_local)
+          )
+        end
         table.remove(parts, 1)
       end
       return parts
@@ -135,6 +158,10 @@ local function _normalize_path(filename, cwd)
     end
 
     out_file = prefix .. table.concat(parts, path.sep)
+  end
+
+  if U.is_msys2 then
+    out_file = U.posix_to_windows(out_file)
   end
 
   return out_file
@@ -182,12 +209,18 @@ Path.__index = function(t, k)
 
   if k == "_cwd" then
     local cwd = uv.fs_realpath "."
+    if U.is_msys2 then
+      cwd = U.posix_to_windows(cwd)
+    end
     t._cwd = cwd
     return cwd
   end
 
   if k == "_absolute" then
     local absolute = uv.fs_realpath(t.filename)
+    if U.is_msys2 then
+      absolute = U.posix_to_windows(absolute)
+    end
     t._absolute = absolute
     return absolute
   end
@@ -259,8 +292,14 @@ function Path:new(...)
     end
 
     path_string = table.concat(path_objs, sep)
+    if U.is_msys2 then
+      path_string = U.posix_to_windows(path_string)
+    end
   else
     assert(type(path_input) == "string", vim.inspect(path_input))
+    if U.is_msys2 then
+      path_input = U.posix_to_windows(path_input)
+    end
     path_string = path_input
   end
 
@@ -319,7 +358,11 @@ function Path:expand()
   -- TODO support windows
   local expanded
   if string.find(self.filename, "~") then
-    expanded = string.gsub(self.filename, "^~", vim.loop.os_homedir())
+    if U.is_msys2 then
+      expanded = string.gsub(self.filename, "^~", vim.fn.expand("~"))
+    else
+      expanded = string.gsub(self.filename, "^~", vim.loop.os_homedir())
+    end
   elseif string.find(self.filename, "^%.") then
     expanded = vim.loop.fs_realpath(self.filename)
     if expanded == nil then
@@ -335,6 +378,9 @@ function Path:expand()
     end
   else
     expanded = self.filename
+  end
+  if expanded and U.is_msys2 then
+    expanded = U.posix_to_windows(expanded)
   end
   return expanded and expanded or error "Path not valid"
 end
@@ -435,7 +481,7 @@ local shorten = (function()
     return shorten_len(filename, 1)
   end
 
-  if jit and path.sep ~= "\\" then
+  if jit and path.sep ~= "\\" then --and not U.is_msys2 then
     local ffi = require "ffi"
     ffi.cdef [[
     typedef unsigned char char_u;
@@ -489,7 +535,7 @@ function Path:mkdir(opts)
       for _, dir in ipairs(dirs) do
         if dir ~= "" then
           local joined = concat_paths(processed, dir)
-          if processed == "" and self._sep == "\\" then
+          if processed == "" and (self._sep == "\\") then -- or U.is_msys2) then
             joined = dir
           end
           local stat = uv.fs_stat(joined) or {}

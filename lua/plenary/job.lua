@@ -3,6 +3,7 @@ local uv = vim.loop
 local compat = require "plenary.compat"
 
 local F = require "plenary.functional"
+local U = require "plenary.utils"
 
 ---@class Job
 ---@field command string Command to run
@@ -64,8 +65,15 @@ end
 
 local function expand(path)
   if vim.in_fast_event() then
+    if U.is_msys2 then
+      path = U.posix_to_windows(path)
+    end
     return assert(uv.fs_realpath(path), string.format("Path must be valid: %s", path))
   else
+    if U.is_msys2 then
+      path = U.posix_to_windows(vim.fn.expand(vim.fn.escape(path, "[]$"), true))
+      return path
+    end
     -- TODO: Probably want to check that this is valid here... otherwise that's weird.
     return vim.fn.expand(vim.fn.escape(path, "[]$"), true)
   end
@@ -112,6 +120,10 @@ function Job:new(o)
 
   obj.command = command
   obj.args = args
+  -- Path can be in posix style even here.
+  if U.is_msys2 and o.cwd then
+    o.cwd = U.posix_to_windows(o.cwd)
+  end
   obj._raw_cwd = o.cwd
   if o.env then
     if type(o.env) ~= "table" then
@@ -269,6 +281,9 @@ function Job:_create_uv_options()
   options.stdio = { self.stdin, self.stdout, self.stderr }
 
   if self._raw_cwd then
+    if U.is_msys2 then
+      self._raw_cwd = U.posix_to_windows(self._raw_cwd)
+    end
     options.cwd = expand(self._raw_cwd)
   end
   if self.env then
