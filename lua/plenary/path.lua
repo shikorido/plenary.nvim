@@ -16,6 +16,8 @@ local S_IF = {
 }
 
 local path = {}
+-- uv on windows does not respect HOME, but vim does.
+-- What rules plenary should follow?
 path.home = vim.loop.os_homedir()
 
 path.sep = (function()
@@ -261,7 +263,7 @@ function Path:new(...)
     path_string = table.concat(path_objs, sep)
   else
     assert(type(path_input) == "string", vim.inspect(path_input))
-    path_string = path_input
+    path_string = path_input:gsub("[/\\]+", sep)
   end
 
   local obj = {
